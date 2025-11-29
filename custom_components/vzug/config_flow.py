@@ -39,7 +39,14 @@ ERR_CANNOT_CONNECT = "cannot_connect"
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for V-ZUG."""
+    """Handle a config flow for V-ZUG integration.
+
+    Supports multiple entry points:
+    - Manual entry: User provides device IP/hostname
+    - DHCP discovery: Automatic discovery via DHCP
+    - Network discovery: Manual network scan for devices
+    - Re-authentication: Update credentials for existing entry
+    """
 
     VERSION = 2
     MINOR_VERSION = 2
@@ -249,6 +256,62 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class CannotConnect(HomeAssistantError):
     """Error to indicate we cannot connect."""
+
+
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for V-ZUG integration.
+
+    Allows users to configure:
+    - State update interval (how often device state is polled)
+    - Config update interval (how often device configuration is refreshed)
+    """
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            # Update intervals will be applied on next reload
+            return self.async_create_entry(title="", data=user_input)
+
+        entry = self.config_entry
+        options = entry.options
+
+        # Get current values or use defaults
+        current_state_interval = options.get(
+            "update_interval_state_seconds", 30
+        )
+        current_config_interval = options.get(
+            "update_interval_config_minutes", 5
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "update_interval_state_seconds",
+                        default=current_state_interval,
+                    ): vol.All(
+                        vol.Coerce(int),
+                        vol.Range(min=10, max=300),
+                    ),
+                    vol.Required(
+                        "update_interval_config_minutes",
+                        default=current_config_interval,
+                    ): vol.All(
+                        vol.Coerce(int),
+                        vol.Range(min=1, max=60),
+                    ),
+                }
+            ),
+            description_placeholders={
+                "state_min": "10",
+                "state_max": "300",
+                "config_min": "1",
+                "config_max": "60",
+            },
+        )
 
 
 def _iter_adapter_interfaces(adapters: list[Adapter]) -> Iterator[IPv4Interface]:

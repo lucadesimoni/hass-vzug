@@ -1,5 +1,7 @@
 import logging
 
+from datetime import timedelta
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
@@ -7,7 +9,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from yarl import URL
 
-from . import api
+from . import api, config_flow
 from .const import CONF_BASE_URL, DOMAIN
 from .shared import Shared
 
@@ -32,7 +34,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     except KeyError:
         credentials = None
+
+    # Get update intervals from options, or use defaults
+    options = entry.options
+    state_interval = timedelta(
+        seconds=options.get("update_interval_state_seconds", 30)
+    )
+    config_interval = timedelta(
+        minutes=options.get("update_interval_config_minutes", 5)
+    )
+
     shared = Shared(hass, base_url, credentials)
+    # Override default intervals with user-configured values
+    shared.state_coord.update_interval = state_interval
+    shared.config_coord.update_interval = config_interval
+
     await shared.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})
@@ -41,6 +57,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+async def async_get_options_flow(
+    config_entry: ConfigEntry,
+) -> config_flow.OptionsFlowHandler:
+    """Get the options flow for this handler.
+    
+    This allows users to configure update intervals for state and config
+    coordinators via the Home Assistant UI.
+    """
+    return config_flow.OptionsFlowHandler()
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

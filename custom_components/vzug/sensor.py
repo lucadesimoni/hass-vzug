@@ -122,11 +122,22 @@ async def async_setup_entry(
 
 
 class StateBase(SensorEntity, CoordinatorEntity[StateCoordinator]):
+    """Base class for sensor entities that track device state.
+
+    These sensors are based on the state coordinator which updates every
+    30 seconds. All state-based sensors inherit from this class.
+    """
+
     _attr_has_entity_name = True
 
     shared: Shared
 
     def __init__(self, shared: Shared) -> None:
+        """Initialize a state-based sensor entity.
+
+        Args:
+            shared: Shared coordinator and state for the device.
+        """
         super().__init__(shared.state_coord)
         self.shared = shared
 
@@ -134,6 +145,14 @@ class StateBase(SensorEntity, CoordinatorEntity[StateCoordinator]):
             f"{shared.unique_id_prefix}-sensor-{self.translation_key}"
         )
         self._attr_device_info = shared.device_info
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return (
+            self.coordinator.last_update_success
+            and self.coordinator.data is not None
+        )
 
 
 class Program(StateBase):
@@ -281,6 +300,14 @@ class LastNotification(StateBase):
 
 
 class UserConfigSensor(SensorEntity, UserConfigEntity):
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return (
+            self.coordinator.last_update_success
+            and self.coordinator.data is not None
+        )
+
     @property
     def native_value(self) -> StateType | date | datetime | Decimal:
         return self.vzug_command.get("value")

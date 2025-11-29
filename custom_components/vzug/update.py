@@ -27,6 +27,13 @@ async def async_setup_entry(
 
 
 class VZugUpdate(UpdateEntity, CoordinatorEntity[UpdateCoordinator]):
+    """Entity representing firmware update status and controls.
+
+    Provides information about available firmware updates and allows
+    installing updates. The update coordinator adapts its polling interval
+    based on update status (6 hours when idle, 5 seconds when active).
+    """
+
     _attr_translation_key = "update"
     _attr_has_entity_name = True
     _attr_device_class = UpdateDeviceClass.FIRMWARE
@@ -38,12 +45,25 @@ class VZugUpdate(UpdateEntity, CoordinatorEntity[UpdateCoordinator]):
     shared: Shared
 
     def __init__(self, shared: Shared) -> None:
+        """Initialize the update entity.
+
+        Args:
+            shared: Shared coordinator and state for the device.
+        """
         super().__init__(shared.update_coord)
         self.shared = shared
 
         self._attr_unique_id = f"{shared.unique_id_prefix}-update"
         self._attr_device_info = shared.device_info
         self._attr_latest_version = None
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return (
+            self.coordinator.last_update_success
+            and self.coordinator.data is not None
+        )
 
     def get_update_component(self) -> api.UpdateComponent:
         try:

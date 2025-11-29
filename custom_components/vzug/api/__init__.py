@@ -241,8 +241,20 @@ class Credentials:
 
 
 class VZugApi:
+    """API client for interacting with V-ZUG appliances.
+
+    This class provides methods to communicate with V-ZUG devices via their
+    local network API. It handles authentication, retries, and error handling.
+
+    Args:
+        base_url: Base URL of the V-ZUG device (e.g., "http://192.168.1.100")
+        credentials: Optional credentials for digest authentication.
+                    If None, requests will be unauthenticated.
+    """
+
     @property
     def base_url(self) -> URL:
+        """Return the base URL of the V-ZUG device."""
         return self._base_url
 
     def __init__(
@@ -279,6 +291,35 @@ class VZugApi:
         retry_delay: float = 2.0,
         value_on_err: Callable[[], Any] | None = None,
     ) -> Any:
+        """Execute a command on the V-ZUG device API.
+
+        This is the core method for all API interactions. It handles retries,
+        error handling, JSON repair, and response validation.
+
+        Args:
+            component: API component to call (e.g., "ai" or "hh").
+            command: Command name to execute.
+            params: Optional query parameters for the command.
+            raw: If True, return raw text response instead of parsed JSON.
+            expected_type: Expected return type (e.g., dict, list). Raises
+                         AssertionError if type doesn't match.
+            reject_empty: If True, raise AssertionError on empty responses.
+            attempts: Number of retry attempts for failed requests.
+            retry_delay: Delay in seconds between retries.
+            value_on_err: Optional callback function that returns a default
+                         value if all retries fail.
+
+        Returns:
+            Parsed response data (dict/list/string) or value from value_on_err
+            if all retries failed.
+
+        Raises:
+            AuthenticationFailed: If authentication fails (HTTP 401).
+            httpx.HTTPStatusError: For non-retryable HTTP errors.
+            httpx.TransportError: For network errors after all retries.
+            AssertionError: If response type validation fails.
+            ValueError: If JSON parsing fails and repair is unsuccessful.
+        """
         if params is None:
             params = {}
         final_params = params.copy()
@@ -343,32 +384,106 @@ class VZugApi:
                 return await once()
             except httpx.HTTPStatusError as err:
                 if err.response.status_code == httpx.codes.UNAUTHORIZED:
+                    _LOGGER.warning(
+                        "Authentication failed for command %s on %s @ %s (attempt %d/%d)",
+                        command,
+                        component,
+                        self._base_url,
+                        attempt_idx + 1,
+                        attempts,
+                    )
                     raise AuthenticationFailed from err
                 if not err.response.is_server_error:
+                    _LOGGER.warning(
+                        "HTTP error %d for command %s on %s @ %s (attempt %d/%d): %s",
+                        err.response.status_code,
+                        command,
+                        component,
+                        self._base_url,
+                        attempt_idx + 1,
+                        attempts,
+                        err.response.text[:200] if err.response.text else "No response body",
+                    )
                     raise
 
                 last_exc = err
-                _LOGGER.debug("server error: %s", err.response)
+                _LOGGER.debug(
+                    "Server error %d for command %s on %s @ %s (attempt %d/%d): %s",
+                    err.response.status_code,
+                    command,
+                    component,
+                    self._base_url,
+                    attempt_idx + 1,
+                    attempts,
+                    err.response.text[:200] if err.response.text else "No response body",
+                )
             except httpx.TransportError as err:
                 last_exc = err
-                _LOGGER.debug("transport error: %r", err)
+                _LOGGER.debug(
+                    "Transport error for command %s on %s @ %s (attempt %d/%d): %r",
+                    command,
+                    component,
+                    self._base_url,
+                    attempt_idx + 1,
+                    attempts,
+                    err,
+                )
                 continue
             except AssertionError as exc:
                 last_exc = exc
-                _LOGGER.debug("response data assertion failed: %s", exc)
+                _LOGGER.debug(
+                    "Response data assertion failed for command %s on %s @ %s (attempt %d/%d): %s",
+                    command,
+                    component,
+                    self._base_url,
+                    attempt_idx + 1,
+                    attempts,
+                    exc,
+                )
             except Exception as exc:
                 last_exc = exc
-                _LOGGER.debug("unknown error: %r", exc)
+                _LOGGER.debug(
+                    "Unknown error for command %s on %s @ %s (attempt %d/%d): %r",
+                    command,
+                    component,
+                    self._base_url,
+                    attempt_idx + 1,
+                    attempts,
+                    exc,
+                )
 
             attempt_idx += 1
 
         if value_on_err:
-            _LOGGER.exception("command error, using default", exc_info=last_exc)
+            _LOGGER.exception(
+                "Command error after %d attempts, using default: %s %s on %s @ %s",
+                attempts,
+                command,
+                params,
+                component,
+                self._base_url,
+                exc_info=last_exc,
+            )
             return value_on_err()
 
         raise last_exc
 
     async def aggregate_state(self, *, default_on_error: bool = True) -> AggState:
+        """Aggregate device state from multiple API endpoints.
+
+        Fetches device status, notifications, and eco info in parallel to
+        build a complete state snapshot.
+
+        Args:
+            default_on_error: If True, returns empty/default values for failed
+                            endpoints instead of raising exceptions.
+
+        Returns:
+            AggState containing device status, notifications, and eco info.
+
+        Raises:
+            AuthenticationFailed: If authentication credentials are invalid.
+        """
         # always start with zh_mode, that seems to do something??
         # zh_mode = await self.get_zh_mode(default_on_error=True)
         zh_mode = -1
@@ -394,6 +509,19 @@ class VZugApi:
     async def aggregate_update_status(
         self, *, supports_update_status: bool, default_on_error: bool = True
     ) -> AggUpdateStatus:
+        """Aggregate update status information.
+
+        Fetches update status, AI firmware version, and HH firmware version.
+
+        Args:
+            supports_update_status: If True, attempts to fetch update status.
+                                  Older devices may not support this endpoint.
+            default_on_error: If True, returns empty/default values for failed
+                            endpoints instead of raising exceptions.
+
+        Returns:
+            AggUpdateStatus containing update information and firmware versions.
+        """
         async def _update() -> UpdateStatus:
             if supports_update_status:
                 return await self.get_update_status(default_on_error=default_on_error)
@@ -411,6 +539,25 @@ class VZugApi:
         )
 
     async def aggregate_meta(self, *, default_on_error: bool = False) -> AggMeta:
+        """Aggregate device metadata from multiple API endpoints.
+
+        This is typically called during device discovery and setup to gather
+        device identification information. Fetches MAC address, device status,
+        model description, and firmware versions.
+
+        Args:
+            default_on_error: If True, returns empty/default values for failed
+                            endpoints. Should typically be False for initial
+                            setup to detect connection issues.
+
+        Returns:
+            AggMeta containing device identification and metadata.
+
+        Raises:
+            AuthenticationFailed: If authentication credentials are invalid.
+            httpx.HTTPStatusError: If critical endpoints fail when
+                                  default_on_error is False.
+        """
         # First method used in config flow to get details about the device
         (
             mac_address,
@@ -461,6 +608,20 @@ class VZugApi:
             )
 
     async def aggregate_config(self) -> AggConfig:
+        """Aggregate device configuration tree.
+
+        Discovers all available categories and commands by querying the device's
+        configuration endpoints. This builds a complete tree of configurable
+        settings that can be exposed as Home Assistant entities.
+
+        Returns:
+            AggConfig dictionary mapping category keys to AggCategory objects,
+            each containing available commands.
+
+        Raises:
+            AuthenticationFailed: If authentication credentials are invalid.
+            httpx.HTTPStatusError: If configuration endpoints are unavailable.
+        """
         category_keys = await self.list_categories()
         config_tree: AggConfig = {}
         for category_key in category_keys:
@@ -485,6 +646,14 @@ class VZugApi:
         return config_tree
 
     async def get_mac_address(self, *, default_on_error: bool = False) -> str:
+        """Get the MAC address of the device.
+
+        Args:
+            default_on_error: If True, returns empty string on error.
+
+        Returns:
+            MAC address as string (format: "XX:XX:XX:XX:XX:XX" or "XX-XX-XX-XX-XX-XX").
+        """
         return await self._command(
             "ai",
             command="getMacAddress",
@@ -611,6 +780,19 @@ class VZugApi:
         return data["value"]
 
     async def get_eco_info(self, *, default_on_error: bool = False) -> EcoInfo:
+        """Get energy and water consumption information.
+
+        Returns eco metrics including total consumption, averages, and
+        program-specific consumption. If both water and energy totals are 0,
+        returns an empty EcoInfo to indicate no data is available.
+
+        Args:
+            default_on_error: If True, returns empty EcoInfo on error.
+
+        Returns:
+            EcoInfo containing water and energy metrics, or empty dict if
+            no meaningful data is available.
+        """
         result = await self._command(
             "hh",
             command="getEcoInfo",
@@ -639,6 +821,21 @@ class VZugApi:
         )
 
     async def get_program(self) -> list[Program]:
+        """Get current program information.
+
+        Retrieves detailed information about the currently selected program
+        including available options, settings, and configuration.
+
+        Returns:
+            List of Program objects containing program details and options.
+
+        Note:
+            This endpoint is only supported on certain devices (see API
+            compatibility table in CONTRIBUTING.md).
+
+        Raises:
+            httpx.HTTPStatusError: If endpoint is not supported (404) or other error.
+        """
         # TODO: this is interesting but what can we do with it??
         # [{"id":52,"name":"Alltag Kurz","status":"selected","starttime":{"min":0,"max":86400,"step":600},"duration":{"set":2460}, "energySaving":{"set":false,"options":[true,false]},"optiStart":{"set":false},"steamfinish":{"set":false,"options":[true,false]},"partialload":{"set":false,"options":[true,false]},"rinsePlus":{"set":false,"options":[true,false]},"dryPlus":{"set":false,"options":[true,false]},"stepIds":[82,81,82,79,78,76,73,74,75,72,71,70]}]
         # [{"id":50,"name":"Eco",        "status":"selected","starttime":{"min":0,"max":86400,"step":600},"duration":{"set":22440},"energySaving":{"set":false,"options":[true,false]},"optiStart":{"set":false},"steamfinish":{"set":true, "options":[true,false]},"partialload":{"set":false,"options":[true,false]},"rinsePlus":{"set":false,"options":[true,false]},"dryPlus":{"set":false,"options":[true,false]},"stepIds":[79,81,79,78,74,75,72,70]}]
@@ -652,6 +849,28 @@ class VZugApi:
     async def set_program(
         self, program_id: int, options: dict[str, Any] | None = None
     ) -> list[Any]:
+        """Set program configuration.
+
+        Configures and optionally starts a program on the device.
+
+        Args:
+            program_id: ID of the program to set (from getAllProgramIds).
+            options: Optional program options dictionary. Can include:
+                    - Program option flags (e.g., "steamfinish", "energySaving")
+                    - Start time configuration
+                    - Duration settings
+                    If None, only the program ID is set.
+
+        Returns:
+            Raw response from the device (usually confirmation).
+
+        Note:
+            This endpoint is only supported on certain devices (see API
+            compatibility table in CONTRIBUTING.md).
+
+        Raises:
+            httpx.HTTPStatusError: If endpoint is not supported or invalid parameters.
+        """
         # example options: {"id":50,"dryPlus":false,"energySaving":false,"partialload":false,"rinsePlus":false,"steamfinish":true}
         # also seen with just the "id" key
         if not options:
@@ -666,6 +885,22 @@ class VZugApi:
         )
 
     async def get_all_program_ids(self) -> list[int]:
+        """Get list of all available program IDs.
+
+        Returns all program IDs that can be used with setProgram. Note that
+        program names are not included - they must be retrieved via getProgram
+        for each individual program.
+
+        Returns:
+            List of program IDs as integers.
+
+        Note:
+            This endpoint is only supported on certain devices (see API
+            compatibility table in CONTRIBUTING.md).
+
+        Raises:
+            httpx.HTTPStatusError: If endpoint is not supported.
+        """
         # TODO: this gives us a nice list of ids that could be used with set_program, but we need a program id to name mapping
         return await self._command(
             "hh",
@@ -674,4 +909,9 @@ class VZugApi:
         )
 
 
-class AuthenticationFailed(Exception): ...
+class AuthenticationFailed(Exception):
+    """Exception raised when authentication with the device fails.
+
+    This typically indicates invalid credentials or that the device requires
+    authentication but none was provided.
+    """

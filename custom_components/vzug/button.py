@@ -46,6 +46,14 @@ class CheckUpdate(ButtonEntity):
         self._attr_unique_id = f"{shared.unique_id_prefix}-check-update"
         self._attr_device_info = shared.device_info
 
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return (
+            self.shared.update_coord.last_update_success
+            and self.shared.update_coord.data is not None
+        )
+
     async def async_press(self) -> None:
         await self.shared.client.check_for_updates()
         await self.shared.update_coord.async_request_refresh()

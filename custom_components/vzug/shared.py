@@ -23,6 +23,23 @@ ConfigCoordinator = DataUpdateCoordinator[api.AggConfig]
 
 
 class Shared:
+    """Shared coordinator and state management for a V-ZUG device.
+
+    This class manages all coordinators (state, update, config) and device
+    metadata for a single V-ZUG device integration instance. It's shared
+    across all entities for the device.
+
+    Attributes:
+        hass: Home Assistant instance.
+        client: VZugApi client for communicating with the device.
+        state_coord: Coordinator for device state updates (30s interval).
+        update_coord: Coordinator for firmware update status (adaptive interval).
+        config_coord: Coordinator for device configuration (5min interval).
+        unique_id_prefix: MAC address used as prefix for entity unique IDs.
+        meta: Aggregated device metadata.
+        device_info: Home Assistant DeviceInfo for device registry.
+    """
+
     hass: HomeAssistant
     client: api.VZugApi
 
@@ -40,6 +57,13 @@ class Shared:
         base_url: yarl.URL,
         credentials: api.Credentials | None,
     ) -> None:
+        """Initialize Shared instance for a V-ZUG device.
+
+        Args:
+            hass: Home Assistant instance.
+            base_url: Base URL of the V-ZUG device.
+            credentials: Optional credentials for authentication.
+        """
         self.hass = hass
         self.client = api.VZugApi(
             base_url,
@@ -74,6 +98,15 @@ class Shared:
         self._first_refresh_done = False
 
     async def async_config_entry_first_refresh(self) -> None:
+        """Perform initial refresh of all coordinators and setup device info.
+
+        This method should be called once when a config entry is first loaded.
+        It fetches device metadata and performs initial coordinator refreshes.
+
+        Raises:
+            ConfigEntryNotReady: If initialization fails.
+            ConfigEntryAuthFailed: If authentication fails.
+        """
         async with detect_auth_failed():
             self.meta = await self.client.aggregate_meta()
 
@@ -96,7 +129,7 @@ class Shared:
         mac_addr = dr.format_mac(self.meta.mac_address)
         self.unique_id_prefix = mac_addr
         if not self.unique_id_prefix:
-            _LOGGER.warn(
+            _LOGGER.warning(
                 "unable to determine unique id from device data: %s", self.meta
             )
 
@@ -139,6 +172,17 @@ class Shared:
 
 @contextlib.asynccontextmanager
 async def detect_auth_failed():
+    """Context manager to detect authentication failures.
+
+    Converts api.AuthenticationFailed exceptions to ConfigEntryAuthFailed
+    so Home Assistant can properly handle re-authentication flows.
+
+    Yields:
+        None
+
+    Raises:
+        ConfigEntryAuthFailed: If authentication fails during the context.
+    """
     try:
         yield
     except api.AuthenticationFailed:
